@@ -70,7 +70,7 @@ export async function getProductById(id: number): Promise<Product> {
  * Fetch comments for a specific product ID.
  */
 export async function getProductComments(id: number): Promise<CommentsResponse> {
-  return fetchJson<CommentsResponse>(`${BASE_URL}/products/${id}/comments`);
+  return fetchJson<CommentsResponse>(`${BASE_URL}/comments/post/${id}`);
 }
 
 /**
