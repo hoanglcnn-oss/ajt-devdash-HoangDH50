@@ -2,18 +2,27 @@
  * ============================================================================
  * DevDash Entry Point
  * ============================================================================
- * Handles application boot, state loading, searching, filtering, and sorting.
+ * Handles application boot, state loading, searching, filtering, sorting,
+ * and loading details in parallel.
  * 
  * Curriculum References:
  * - Spread Operator (immutability copy): docs/JS/01_JavaScript_Advanced.md#4-rest-parameters--5-spread-operator
  * - Destructuring: docs/JS/01_JavaScript_Advanced.md#6-destructuring
  * - Higher-Order Functions (filter, sort): docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
- * - async/await: docs/JS/02_Asynchronous_JavaScript.md#6-async--await
+ * - async/await & Promise.all: docs/JS/02_Asynchronous_JavaScript.md#6-async--await
+ * - Promise Combinators: docs/JS/02_Asynchronous_JavaScript.md#5-promise-combinators-promiseall-and-friends
  * ============================================================================
  */
 
-import { getProducts, getCategories } from './api';
-import { renderLoading, renderError, renderProductList, updateStats } from './ui';
+import { getProducts, getCategories, getProductById, getProductComments } from './api';
+import { 
+  renderLoading, 
+  renderError, 
+  renderProductList, 
+  updateStats, 
+  renderProductDetail, 
+  closeProductDetail 
+} from './ui';
 import { Product } from './types';
 
 // Global state variables for caching fetched data
@@ -22,24 +31,17 @@ let categoriesList: string[] = [];
 
 /**
  * Filter and sort products, then redraw the list.
- * 
- * Concept: Array.prototype.filter is a higher-order function that takes a callback.
- * Concept: Array.prototype.sort mutates the original array. We must use the ES6 spread operator
- * to create a shallow copy first to maintain immutable state practices.
- * Reference: docs/JS/01_JavaScript_Advanced.md#4-rest-parameters--5-spread-operator
- * Reference: docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
  */
 function applyFiltersAndSort(): void {
   const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
   const categoryFilter = document.getElementById('category-filter') as HTMLSelectElement | null;
   const sortSelect = document.getElementById('sort-select') as HTMLSelectElement | null;
 
-  // Destructure query parameters or fall back to defaults
   const query = searchInput?.value.toLowerCase().trim() || '';
   const selectedCategory = categoryFilter?.value || 'all';
   const sortOption = sortSelect?.value || 'none';
 
-  // 1. Filter using the higher-order function filter()
+  // 1. Filter using filter()
   let filtered = allProducts.filter((product) => {
     const matchesSearch = 
       product.title.toLowerCase().includes(query) || 
@@ -51,7 +53,7 @@ function applyFiltersAndSort(): void {
     return matchesSearch && matchesCategory;
   });
 
-  // 2. Sort the array using a shallow copy (to prevent mutation) and sort() HOF
+  // 2. Sort using a shallow copy (to prevent mutation) and sort() HOF
   if (sortOption !== 'none') {
     filtered = [...filtered].sort((a, b) => {
       switch (sortOption) {
@@ -108,10 +110,49 @@ function populateCategories(categories: string[]): void {
 }
 
 /**
- * Handle card click - placeholder for Day 5 detail view.
+ * Handle card click - loads detailed product information and user reviews in parallel.
+ * 
+ * Concept: Promise.all fetches multiple independent async requests concurrently.
+ * We avoid "waterfall requests" (first waiting for product, then waiting for comments)
+ * which improves response time dramatically.
+ * Reference: docs/JS/02_Asynchronous_JavaScript.md#5-promise-combinators-promiseall-and-friends
  */
-function handleProductClick(productId: number): void {
-  console.log(`Product clicked: ${productId}. Detail view will be implemented in Day 5.`);
+async function handleProductClick(productId: number): Promise<void> {
+  try {
+    // Show spinner inside modal overlay while fetching details
+    const detailOverlay = document.getElementById('detail-overlay');
+    const detailModal = document.getElementById('detail-modal');
+    if (detailOverlay && detailModal) {
+      detailModal.innerHTML = `
+        <div class="loading-container">
+          <div class="spinner"></div>
+          <div class="loading-text">LOADING DETAIL DATA...</div>
+        </div>
+      `;
+      detailOverlay.classList.add('active');
+    }
+
+    // Await both promises in parallel using Promise.all
+    const [product, commentsResponse] = await Promise.all([
+      getProductById(productId),
+      getProductComments(productId),
+    ]);
+
+    // Render loaded detail information
+    renderProductDetail(product, commentsResponse.comments, handleCloseProductDetail);
+
+  } catch (error: unknown) {
+    const errorMsg = error instanceof Error ? error.message : 'Failed to fetch details';
+    alert(`Error loading details: ${errorMsg}`);
+    handleCloseProductDetail();
+  }
+}
+
+/**
+ * Close product detail modal overlay.
+ */
+function handleCloseProductDetail(): void {
+  closeProductDetail();
 }
 
 /**
@@ -125,7 +166,6 @@ function bindEvents(): void {
 
   if (searchInput) {
     searchInput.addEventListener('input', () => {
-      // In Day 6 we will wrap this with a debounce closure
       applyFiltersAndSort();
     });
   }
@@ -145,16 +185,22 @@ function bindEvents(): void {
 
 /**
  * Bootstraps the application.
+ * 
+ * Concept: Loading categories and initial products list in parallel.
+ * Reference: docs/JS/02_Asynchronous_JavaScript.md#5-promise-combinators-promiseall-and-friends
  */
 async function bootstrapApp(): Promise<void> {
   try {
     renderLoading();
 
-    // Fetch products and category options in sequence (Day 5 will parallelize this)
-    const productsData = await getProducts();
-    categoriesList = await getCategories();
+    // Parallel fetch for initial boot data
+    const [productsData, categoriesData] = await Promise.all([
+      getProducts(),
+      getCategories(),
+    ]);
 
     allProducts = productsData.products;
+    categoriesList = categoriesData;
 
     // Build the UI elements
     populateCategories(categoriesList);

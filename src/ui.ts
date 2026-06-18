@@ -3,7 +3,7 @@
  * DevDash UI Module
  * ============================================================================
  * Handles DOM manipulation and UI rendering for list views, loading spinners,
- * and error boxes.
+ * error boxes, and product details overlays.
  * 
  * Curriculum References:
  * - Event loop & Timer callbacks: docs/JS/02_Asynchronous_JavaScript.md#1-the-event-loop
@@ -12,7 +12,7 @@
  * ============================================================================
  */
 
-import { Product } from './types';
+import { Product, Comment } from './types';
 
 // Cache DOM elements for quick access
 const contentContainer = document.getElementById('dashboard-content');
@@ -20,12 +20,11 @@ const statTotalProducts = document.getElementById('stat-total-products');
 const statTotalCategories = document.getElementById('stat-total-categories');
 const statAvgPrice = document.getElementById('stat-avg-price');
 const statAvgRating = document.getElementById('stat-avg-rating');
+const detailOverlay = document.getElementById('detail-overlay');
+const detailModal = document.getElementById('detail-modal');
 
 /**
  * Render a beautiful loading spinner in the main dashboard content container.
- * 
- * Concept: Keeping the user informed by displaying a clear loading state.
- * Reference: docs/JS/02_Asynchronous_JavaScript.md#7-error-handling (UI states)
  */
 export function renderLoading(): void {
   if (!contentContainer) return;
@@ -39,9 +38,6 @@ export function renderLoading(): void {
 
 /**
  * Render an error state in the UI with a Retry action.
- * 
- * Concept: Handling failures gracefully in async flows with visible error states.
- * Reference: docs/JS/02_Asynchronous_JavaScript.md#7-error-handling
  */
 export function renderError(message: string, onRetry: () => void): void {
   if (!contentContainer) return;
@@ -53,7 +49,6 @@ export function renderError(message: string, onRetry: () => void): void {
     </div>
   `;
 
-  // Attach retry click handler
   const retryBtn = document.getElementById('retry-btn');
   if (retryBtn) {
     retryBtn.addEventListener('click', onRetry);
@@ -85,10 +80,6 @@ function generateStars(rating: number): string {
 
 /**
  * Render the product list as a grid of cards in the DOM.
- * 
- * Concept: Transforming array data into HTML strings using HOF (map and join)
- * instead of imperative for-loops.
- * Reference: docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
  */
 export function renderProductList(products: Product[], onProductClick: (id: number) => void): void {
   if (!contentContainer) return;
@@ -98,7 +89,6 @@ export function renderProductList(products: Product[], onProductClick: (id: numb
     return;
   }
 
-  // Use map to transform each product object into a HTML card string, and join('') to combine them.
   const cardsHtml = products
     .map((product) => {
       return `
@@ -125,7 +115,6 @@ export function renderProductList(products: Product[], onProductClick: (id: numb
 
   contentContainer.innerHTML = `<div class="products-grid">${cardsHtml}</div>`;
 
-  // Attach dynamic event listeners to each product card
   const cards = contentContainer.querySelectorAll('.product-card');
   cards.forEach((card) => {
     card.addEventListener('click', () => {
@@ -139,10 +128,6 @@ export function renderProductList(products: Product[], onProductClick: (id: numb
 
 /**
  * Update the stats overview counters on the top of the dashboard.
- * 
- * Concept: Array.reduce is a powerful HOF that carries an accumulator,
- * converting an array into a single value.
- * Reference: docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
  */
 export function updateStats(products: Product[], categoryCount: number): void {
   if (products.length === 0) {
@@ -153,17 +138,123 @@ export function updateStats(products: Product[], categoryCount: number): void {
     return;
   }
 
-  // Calculate sum of prices using reduce
   const totalPrice = products.reduce((acc, p) => acc + p.price, 0);
   const avgPrice = totalPrice / products.length;
 
-  // Calculate sum of ratings using reduce
   const totalRating = products.reduce((acc, p) => acc + p.rating, 0);
   const avgRating = totalRating / products.length;
 
-  // Update DOM elements
   if (statTotalProducts) statTotalProducts.textContent = products.length.toString();
   if (statTotalCategories) statTotalCategories.textContent = categoryCount.toString();
   if (statAvgPrice) statAvgPrice.textContent = `$${avgPrice.toFixed(0)}`;
   if (statAvgRating) statAvgRating.textContent = avgRating.toFixed(1);
+}
+
+/**
+ * Close the product details overlay.
+ */
+export function closeProductDetail(): void {
+  if (detailOverlay) {
+    detailOverlay.classList.remove('active');
+  }
+}
+
+/**
+ * Render the product detail modal in the overlay.
+ * 
+ * Concept: Higher-Order Functions map/join to render list.
+ * Reference: docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
+ */
+export function renderProductDetail(
+  product: Product,
+  comments: Comment[],
+  onClose: () => void
+): void {
+  if (!detailOverlay || !detailModal) return;
+
+  // Compute stock level indicator class
+  let stockClass = 'stock-instock';
+  let stockText = 'In Stock';
+  if (product.stock === 0) {
+    stockClass = 'stock-out';
+    stockText = 'Out of Stock';
+  } else if (product.stock < 10) {
+    stockClass = 'stock-low';
+    stockText = `Only ${product.stock} left in stock`;
+  } else {
+    stockText = `${product.stock} items available`;
+  }
+
+  // Construct comments markup
+  const commentsHtml = comments.length === 0
+    ? '<p class="no-comments">No comments available for this product.</p>'
+    : comments
+        .map(
+          (c) => `
+            <div class="comment-item">
+              <p class="comment-author">@${c.user.username}</p>
+              <p class="comment-body">${c.body}</p>
+            </div>
+          `
+        )
+        .join('');
+
+  detailModal.innerHTML = `
+    <button class="close-modal-btn" id="close-modal-btn" aria-label="Close details">&times;</button>
+    <div class="detail-grid">
+      <!-- Image Column -->
+      <div class="detail-img-column">
+        <img class="detail-image" src="${product.images[0] || product.thumbnail}" alt="${product.title}">
+      </div>
+      <!-- Content Column -->
+      <div class="detail-content-column">
+        <span class="detail-category">${product.category}</span>
+        <h2 class="detail-title">${product.title}</h2>
+        ${product.brand ? `<p class="detail-brand">Brand: ${product.brand}</p>` : ''}
+        
+        <div class="detail-price-row">
+          <span class="detail-price">$${product.price.toLocaleString()}</span>
+          <span class="detail-discount">${product.discountPercentage}% OFF</span>
+        </div>
+
+        <div class="detail-rating">
+          ${generateStars(product.rating)}
+          <span>${product.rating.toFixed(1)} / 5.0 Rating</span>
+        </div>
+
+        <p class="detail-description">${product.description}</p>
+
+        <div class="detail-stock-row">
+          <span class="stock-indicator ${stockClass}"></span>
+          <span>${stockText}</span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- Comments Section -->
+    <div class="comments-section">
+      <h3 class="comments-header">User Reviews (${comments.length})</h3>
+      <div class="comment-list">
+        ${commentsHtml}
+      </div>
+    </div>
+  `;
+
+  // Display overlay
+  detailOverlay.classList.add('active');
+
+  // Attach event listener for close button
+  const closeBtn = document.getElementById('close-modal-btn');
+  if (closeBtn) {
+    closeBtn.addEventListener('click', onClose);
+  }
+
+  // Close when clicking outside of the modal
+  const clickOutsideHandler = (e: MouseEvent) => {
+    if (e.target === detailOverlay) {
+      onClose();
+      detailOverlay.removeEventListener('click', clickOutsideHandler);
+    }
+  };
+  detailOverlay.addEventListener('click', clickOutsideHandler);
 }
