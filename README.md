@@ -2,7 +2,15 @@
 
 **DevDash** is a modern, single-page, strictly-typed dashboard built with **Vite**, **TypeScript**, and native browser technologies. It fetches product data, category listings, and review comments asynchronously from the public **DummyJSON API**, transforms the data with functional patterns, and displays it inside a dark-themed glassmorphic user interface.
 
-## 🚀 Features List (Rubric Matching)
+---
+
+## 🚀 Live Demo & Deployment
+
+- **GitHub Pages Link**: [Click here to view live demo](https://ajt-devdash-hoang-dh-50.vercel.app/)
+
+---
+
+## 🛠️ Features List (Rubric Matching)
 
 Here is a summary of all implemented features mapped to the assignment's scoring tiers:
 
