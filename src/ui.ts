@@ -3,16 +3,25 @@
  * DevDash UI Module
  * ============================================================================
  * Handles DOM manipulation and UI rendering for list views, loading spinners,
- * error boxes, and product details overlays.
+ * error boxes, stats overview, and modal overlays.
+ * Includes exhaustive type narrowing for application state.
  * 
  * Curriculum References:
  * - Event loop & Timer callbacks: docs/JS/02_Asynchronous_JavaScript.md#1-the-event-loop
  * - Error Handling & states in UI: docs/JS/02_Asynchronous_JavaScript.md#7-error-handling
  * - Higher-Order Functions (map/filter/reduce): docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
+ * - Discriminated Union & Narrowing: docs/JS/03_TypeScript.md#6-type-narrowing
  * ============================================================================
  */
 
-import { Product, Comment } from './types';
+import { Product, Comment, AppState } from './types';
+
+// Actions triggered from UI elements
+export interface AppActions {
+  retry: () => void;
+  onProductClick: (id: number) => void;
+  onCloseDetail: () => void;
+}
 
 // Cache DOM elements for quick access
 const contentContainer = document.getElementById('dashboard-content');
@@ -26,7 +35,7 @@ const detailModal = document.getElementById('detail-modal');
 /**
  * Render a beautiful loading spinner in the main dashboard content container.
  */
-export function renderLoading(): void {
+function renderLoading(): void {
   if (!contentContainer) return;
   contentContainer.innerHTML = `
     <div class="loading-container" id="loading-spinner">
@@ -39,7 +48,7 @@ export function renderLoading(): void {
 /**
  * Render an error state in the UI with a Retry action.
  */
-export function renderError(message: string, onRetry: () => void): void {
+function renderError(message: string, onRetry: () => void): void {
   if (!contentContainer) return;
   contentContainer.innerHTML = `
     <div class="error-container">
@@ -58,7 +67,7 @@ export function renderError(message: string, onRetry: () => void): void {
 /**
  * Render a simple placeholder when no products match filters.
  */
-export function renderEmptyState(): void {
+function renderEmptyState(): void {
   if (!contentContainer) return;
   contentContainer.innerHTML = `
     <div class="empty-container">
@@ -79,9 +88,33 @@ function generateStars(rating: number): string {
 }
 
 /**
+ * Populate the category dropdown options.
+ */
+export function populateCategories(categories: string[], selectedCategory: string): void {
+  const filterSelect = document.getElementById('category-filter') as HTMLSelectElement | null;
+  if (!filterSelect) return;
+
+  // Only repopulate if list is different or empty to preserve user context
+  if (filterSelect.options.length <= 1 && categories.length > 0) {
+    filterSelect.innerHTML = '<option value="all">All Categories</option>';
+    categories.forEach((cat) => {
+      const option = document.createElement('option');
+      option.value = cat;
+      option.textContent = cat.charAt(0).toUpperCase() + cat.slice(1);
+      filterSelect.appendChild(option);
+    });
+  }
+
+  // Sync selection value
+  if (filterSelect.value !== selectedCategory) {
+    filterSelect.value = selectedCategory;
+  }
+}
+
+/**
  * Render the product list as a grid of cards in the DOM.
  */
-export function renderProductList(products: Product[], onProductClick: (id: number) => void): void {
+function renderProductList(products: Product[], onProductClick: (id: number) => void): void {
   if (!contentContainer) return;
 
   if (products.length === 0) {
@@ -129,7 +162,7 @@ export function renderProductList(products: Product[], onProductClick: (id: numb
 /**
  * Update the stats overview counters on the top of the dashboard.
  */
-export function updateStats(products: Product[], categoryCount: number): void {
+function updateStats(products: Product[], categoryCount: number): void {
   if (products.length === 0) {
     if (statTotalProducts) statTotalProducts.textContent = '0';
     if (statTotalCategories) statTotalCategories.textContent = categoryCount.toString();
@@ -153,7 +186,7 @@ export function updateStats(products: Product[], categoryCount: number): void {
 /**
  * Close the product details overlay.
  */
-export function closeProductDetail(): void {
+function closeProductDetail(): void {
   if (detailOverlay) {
     detailOverlay.classList.remove('active');
   }
@@ -161,11 +194,8 @@ export function closeProductDetail(): void {
 
 /**
  * Render the product detail modal in the overlay.
- * 
- * Concept: Higher-Order Functions map/join to render list.
- * Reference: docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
  */
-export function renderProductDetail(
+function renderProductDetail(
   product: Product,
   comments: Comment[],
   onClose: () => void
@@ -257,4 +287,53 @@ export function renderProductDetail(
     }
   };
   detailOverlay.addEventListener('click', clickOutsideHandler);
+}
+
+/**
+ * Main rendering router that updates the screen based on current AppState.
+ * 
+ * Concept: Discriminated Union exhaustive narrowing. We switch on state.status.
+ * If we add a new state later, the compiler will catch it because it won't hit
+ * the default assertNever check, causing a compile error!
+ * Reference: docs/JS/03_TypeScript.md#6-type-narrowing
+ */
+export function renderApp(state: AppState, actions: AppActions): void {
+  switch (state.status) {
+    case 'loading':
+      renderLoading();
+      closeProductDetail();
+      break;
+
+    case 'error':
+      renderError(state.error, actions.retry);
+      closeProductDetail();
+      break;
+
+    case 'success':
+      populateCategories(state.categoriesList, state.selectedCategory);
+      renderProductList(state.filteredProducts, actions.onProductClick);
+      updateStats(state.filteredProducts, state.categoriesList.length);
+      closeProductDetail();
+      break;
+
+    case 'detail':
+      populateCategories(state.categoriesList, state.selectedCategory);
+      renderProductList(state.filteredProducts, actions.onProductClick);
+      updateStats(state.filteredProducts, state.categoriesList.length);
+      // Overlay product details modal on top of products grid
+      renderProductDetail(state.selectedProduct, state.selectedComments, actions.onCloseDetail);
+      break;
+
+    default:
+      // Compilation check for exhaustiveness.
+      // Reference: docs/JS/03_TypeScript.md#3-function-type-annotations (never)
+      assertNever(state);
+  }
+}
+
+/**
+ * Asserts at compile time that a execution path is unreachable.
+ */
+function assertNever(x: never): never {
+  throw new Error(`Unhandled AppState condition: ${JSON.stringify(x)}`);
 }

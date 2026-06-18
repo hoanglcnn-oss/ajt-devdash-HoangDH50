@@ -107,3 +107,34 @@ export type ProductCreateInput = Omit<Product, 'id'>;
  * Reference: docs/JS/03_TypeScript.md#11-utility-types
  */
 export type ProductUpdateInput = Partial<ProductCreateInput>;
+
+/**
+ * Discriminated Union representing the entire UI/application state.
+ * 
+ * Concept: Discriminated union uses a literal tag ('status') to narrow the union type.
+ * Reference: docs/JS/03_TypeScript.md#5-union--intersection-types and docs/JS/03_TypeScript.md#6-type-narrowing
+ */
+export type AppState =
+  | { status: 'loading' }
+  | { status: 'error'; error: string }
+  | {
+      status: 'success';
+      allProducts: Product[];
+      filteredProducts: Product[];
+      categoriesList: string[];
+      searchQuery: string;
+      selectedCategory: string;
+      sortBy: string;
+    }
+  | {
+      status: 'detail';
+      allProducts: Product[];
+      filteredProducts: Product[];
+      categoriesList: string[];
+      searchQuery: string;
+      selectedCategory: string;
+      sortBy: string;
+      selectedProduct: Product;
+      selectedComments: Comment[];
+    };
+

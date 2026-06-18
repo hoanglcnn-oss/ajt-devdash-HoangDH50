@@ -2,60 +2,62 @@
  * ============================================================================
  * DevDash Entry Point
  * ============================================================================
- * Handles application boot, state loading, searching, filtering, sorting,
- * and loading details in parallel.
+ * Handles state transitions, debounced search inputs, detail page caching
+ * via CacheManager, and rendering updates.
  * 
  * Curriculum References:
- * - Spread Operator (immutability copy): docs/JS/01_JavaScript_Advanced.md#4-rest-parameters--5-spread-operator
- * - Destructuring: docs/JS/01_JavaScript_Advanced.md#6-destructuring
- * - Higher-Order Functions (filter, sort): docs/JS/01_JavaScript_Advanced.md#7-higher-order-functions-hof
- * - async/await & Promise.all: docs/JS/02_Asynchronous_JavaScript.md#6-async--await
- * - Promise Combinators: docs/JS/02_Asynchronous_JavaScript.md#5-promise-combinators-promiseall-and-friends
+ * - Closures (debounce/memoize): docs/JS/01_JavaScript_Advanced.md#8-closures
+ * - Memoization: docs/JS/01_JavaScript_Advanced.md#9-memoization
+ * - Generic constraints: docs/JS/03_TypeScript.md#9-generics
+ * - Discriminated unions narrowing: docs/JS/03_TypeScript.md#6-type-narrowing
  * ============================================================================
  */
 
 import { getProducts, getCategories, getProductById, getProductComments } from './api';
-import { 
-  renderLoading, 
-  renderError, 
-  renderProductList, 
-  updateStats, 
-  renderProductDetail, 
-  closeProductDetail 
-} from './ui';
-import { Product } from './types';
+import { renderApp, AppActions } from './ui';
+import { Product, Comment, Identifiable } from './types';
+import { getState, setState, subscribe } from './state';
+import { debounce, memoize, CacheManager } from './utils';
 
-// Global state variables for caching fetched data
-let allProducts: Product[] = [];
-let categoriesList: string[] = [];
+// Define cache interface conforming to Identifiable constraint
+interface CachedDetail extends Identifiable {
+  id: number;
+  product: Product;
+  comments: Comment[];
+}
+
+// Instantiate the Generic CacheManager class with constraint
+const detailsCache = new CacheManager<CachedDetail>();
+
+// Memoized analytics utility: cache category stats calculations
+const calculateCategoryMetrics = memoize((products: Product[]): Record<string, number> => {
+  return products.reduce((acc, product) => {
+    acc[product.category] = (acc[product.category] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+});
 
 /**
- * Filter and sort products, then redraw the list.
+ * Perform filtering and sorting of product lists.
+ * Uses higher-order methods (filter, sort, spread).
  */
-function applyFiltersAndSort(): void {
-  const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
-  const categoryFilter = document.getElementById('category-filter') as HTMLSelectElement | null;
-  const sortSelect = document.getElementById('sort-select') as HTMLSelectElement | null;
-
-  const query = searchInput?.value.toLowerCase().trim() || '';
-  const selectedCategory = categoryFilter?.value || 'all';
-  const sortOption = sortSelect?.value || 'none';
-
-  // 1. Filter using filter()
-  let filtered = allProducts.filter((product) => {
+function runFilteringAndSorting(
+  products: Product[],
+  query: string,
+  category: string,
+  sortOption: string
+): Product[] {
+  let results = products.filter((p) => {
     const matchesSearch = 
-      product.title.toLowerCase().includes(query) || 
-      product.description.toLowerCase().includes(query);
-    
+      p.title.toLowerCase().includes(query) || 
+      p.description.toLowerCase().includes(query);
     const matchesCategory = 
-      selectedCategory === 'all' || product.category === selectedCategory;
-
+      category === 'all' || p.category === category;
     return matchesSearch && matchesCategory;
   });
 
-  // 2. Sort using a shallow copy (to prevent mutation) and sort() HOF
   if (sortOption !== 'none') {
-    filtered = [...filtered].sort((a, b) => {
+    results = [...results].sort((a, b) => {
       switch (sortOption) {
         case 'price-asc':
           return a.price - b.price;
@@ -71,75 +73,99 @@ function applyFiltersAndSort(): void {
     });
   }
 
-  // Render updated list view
-  renderProductList(filtered, handleProductClick);
-  // Update overview figures based on filtered results
-  updateStats(filtered, categoriesList.length);
+  return results;
 }
 
 /**
- * Reset all filter inputs to default values.
+ * Actions structure bound to UI elements triggers.
  */
-function handleResetFilters(): void {
-  const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
-  const categoryFilter = document.getElementById('category-filter') as HTMLSelectElement | null;
-  const sortSelect = document.getElementById('sort-select') as HTMLSelectElement | null;
-
-  if (searchInput) searchInput.value = '';
-  if (categoryFilter) categoryFilter.value = 'all';
-  if (sortSelect) sortSelect.value = 'none';
-
-  applyFiltersAndSort();
-}
+const appActions: AppActions = {
+  retry: bootstrapApp,
+  onProductClick: handleProductClick,
+  onCloseDetail: handleCloseProductDetail,
+};
 
 /**
- * Populate the category dropdown element.
+ * Handle detail modal closing.
  */
-function populateCategories(categories: string[]): void {
-  const filterSelect = document.getElementById('category-filter') as HTMLSelectElement | null;
-  if (!filterSelect) return;
-
-  filterSelect.innerHTML = '<option value="all">All Categories</option>';
-
-  categories.forEach((cat) => {
-    const option = document.createElement('option');
-    option.value = cat;
-    option.textContent = cat.charAt(0).toUpperCase() + cat.slice(1);
-    filterSelect.appendChild(option);
-  });
+function handleCloseProductDetail(): void {
+  const state = getState();
+  if (state.status === 'detail') {
+    setState({
+      status: 'success',
+      allProducts: state.allProducts,
+      filteredProducts: state.filteredProducts,
+      categoriesList: state.categoriesList,
+      searchQuery: state.searchQuery,
+      selectedCategory: state.selectedCategory,
+      sortBy: state.sortBy,
+    });
+  }
 }
 
 /**
- * Handle card click - loads detailed product information and user reviews in parallel.
- * 
- * Concept: Promise.all fetches multiple independent async requests concurrently.
- * We avoid "waterfall requests" (first waiting for product, then waiting for comments)
- * which improves response time dramatically.
- * Reference: docs/JS/02_Asynchronous_JavaScript.md#5-promise-combinators-promiseall-and-friends
+ * Click handler for product cards.
+ * Uses generic class CacheManager to prevent duplicate details calls.
  */
 async function handleProductClick(productId: number): Promise<void> {
+  const state = getState();
+  if (state.status !== 'success' && state.status !== 'detail') return;
+
+  // 1. Check if item has already been fetched and cached
+  if (detailsCache.has(productId)) {
+    const cached = detailsCache.get(productId)!;
+    setState({
+      status: 'detail',
+      allProducts: state.allProducts,
+      filteredProducts: state.filteredProducts,
+      categoriesList: state.categoriesList,
+      searchQuery: state.searchQuery,
+      selectedCategory: state.selectedCategory,
+      sortBy: state.sortBy,
+      selectedProduct: cached.product,
+      selectedComments: cached.comments,
+    });
+    return;
+  }
+
   try {
-    // Show spinner inside modal overlay while fetching details
+    // Show temporary spinner placeholder in detail modal
     const detailOverlay = document.getElementById('detail-overlay');
     const detailModal = document.getElementById('detail-modal');
     if (detailOverlay && detailModal) {
+      detailOverlay.classList.add('active');
       detailModal.innerHTML = `
         <div class="loading-container">
           <div class="spinner"></div>
           <div class="loading-text">LOADING DETAIL DATA...</div>
         </div>
       `;
-      detailOverlay.classList.add('active');
     }
 
-    // Await both promises in parallel using Promise.all
+    // 2. Fetch profile data and comments in parallel using Promise.all
     const [product, commentsResponse] = await Promise.all([
       getProductById(productId),
       getProductComments(productId),
     ]);
 
-    // Render loaded detail information
-    renderProductDetail(product, commentsResponse.comments, handleCloseProductDetail);
+    // Save to CacheManager registry
+    detailsCache.set({
+      id: productId,
+      product,
+      comments: commentsResponse.comments,
+    });
+
+    setState({
+      status: 'detail',
+      allProducts: state.allProducts,
+      filteredProducts: state.filteredProducts,
+      categoriesList: state.categoriesList,
+      searchQuery: state.searchQuery,
+      selectedCategory: state.selectedCategory,
+      sortBy: state.sortBy,
+      selectedProduct: product,
+      selectedComments: commentsResponse.comments,
+    });
 
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : 'Failed to fetch details';
@@ -148,15 +174,96 @@ async function handleProductClick(productId: number): Promise<void> {
   }
 }
 
+// 3. Debounced filter logic using the closure wrapper
+const debouncedApplyFilters = debounce(() => {
+  const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
+  const query = searchInput?.value.toLowerCase().trim() || '';
+
+  const state = getState();
+  if (state.status === 'success' || state.status === 'detail') {
+    const filtered = runFilteringAndSorting(
+      state.allProducts,
+      query,
+      state.selectedCategory,
+      state.sortBy
+    );
+    setState({
+      ...state,
+      searchQuery: query,
+      filteredProducts: filtered,
+    });
+  }
+}, 300);
+
 /**
- * Close product detail modal overlay.
+ * Filter change event router.
  */
-function handleCloseProductDetail(): void {
-  closeProductDetail();
+function handleCategoryChange(e: Event): void {
+  const category = (e.target as HTMLSelectElement).value;
+  const state = getState();
+  if (state.status === 'success' || state.status === 'detail') {
+    const filtered = runFilteringAndSorting(
+      state.allProducts,
+      state.searchQuery,
+      category,
+      state.sortBy
+    );
+    setState({
+      ...state,
+      selectedCategory: category,
+      filteredProducts: filtered,
+    });
+  }
 }
 
 /**
- * Bind DOM events to controls.
+ * Sort change event router.
+ */
+function handleSortChange(e: Event): void {
+  const sortBy = (e.target as HTMLSelectElement).value;
+  const state = getState();
+  if (state.status === 'success' || state.status === 'detail') {
+    const filtered = runFilteringAndSorting(
+      state.allProducts,
+      state.searchQuery,
+      state.selectedCategory,
+      sortBy
+    );
+    setState({
+      ...state,
+      sortBy,
+      filteredProducts: filtered,
+    });
+  }
+}
+
+/**
+ * Reset dashboard filters.
+ */
+function handleReset(): void {
+  const searchInput = document.getElementById('search-input') as HTMLInputElement | null;
+  if (searchInput) searchInput.value = '';
+
+  const state = getState();
+  if (state.status === 'success' || state.status === 'detail') {
+    const filtered = runFilteringAndSorting(
+      state.allProducts,
+      '',
+      'all',
+      'none'
+    );
+    setState({
+      ...state,
+      searchQuery: '',
+      selectedCategory: 'all',
+      sortBy: 'none',
+      filteredProducts: filtered,
+    });
+  }
+}
+
+/**
+ * Bind DOM event listeners to controls.
  */
 function bindEvents(): void {
   const searchInput = document.getElementById('search-input');
@@ -165,58 +272,61 @@ function bindEvents(): void {
   const resetBtn = document.getElementById('reset-btn');
 
   if (searchInput) {
-    searchInput.addEventListener('input', () => {
-      applyFiltersAndSort();
-    });
+    searchInput.addEventListener('input', debouncedApplyFilters);
   }
-
   if (categoryFilter) {
-    categoryFilter.addEventListener('change', applyFiltersAndSort);
+    categoryFilter.addEventListener('change', handleCategoryChange);
   }
-
   if (sortSelect) {
-    sortSelect.addEventListener('change', applyFiltersAndSort);
+    sortSelect.addEventListener('change', handleSortChange);
   }
-
   if (resetBtn) {
-    resetBtn.addEventListener('click', handleResetFilters);
+    resetBtn.addEventListener('click', handleReset);
   }
 }
 
 /**
  * Bootstraps the application.
- * 
- * Concept: Loading categories and initial products list in parallel.
- * Reference: docs/JS/02_Asynchronous_JavaScript.md#5-promise-combinators-promiseall-and-friends
  */
 async function bootstrapApp(): Promise<void> {
   try {
-    renderLoading();
+    setState({ status: 'loading' });
 
-    // Parallel fetch for initial boot data
+    // Fetch initial datasets in parallel
     const [productsData, categoriesData] = await Promise.all([
       getProducts(),
       getCategories(),
     ]);
 
-    allProducts = productsData.products;
-    categoriesList = categoriesData;
+    const products = productsData.products;
 
-    // Build the UI elements
-    populateCategories(categoriesList);
-    renderProductList(allProducts, handleProductClick);
-    updateStats(allProducts, categoriesList.length);
+    // Demo of using memoized function calculation on load
+    const categoryDistribution = calculateCategoryMetrics(products);
+    console.log('Initial memoized category metrics distribution:', categoryDistribution);
 
-    // Attach controllers listeners
-    bindEvents();
+    setState({
+      status: 'success',
+      allProducts: products,
+      filteredProducts: products,
+      categoriesList: categoriesData,
+      searchQuery: '',
+      selectedCategory: 'all',
+      sortBy: 'none',
+    });
 
   } catch (error: unknown) {
     const errorMsg = error instanceof Error ? error.message : 'Unknown Network Error';
-    renderError(errorMsg, bootstrapApp);
+    setState({ status: 'error', error: errorMsg });
   }
 }
 
-// Start application when DOM is ready
+// Subscribe user interfaces to state store events (Single Source of Truth)
+subscribe((state) => {
+  renderApp(state, appActions);
+});
+
+// Boot when DOM has completed parsing
 window.addEventListener('DOMContentLoaded', () => {
+  bindEvents();
   bootstrapApp();
 });
